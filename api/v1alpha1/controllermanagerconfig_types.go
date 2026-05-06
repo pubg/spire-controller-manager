@@ -58,6 +58,16 @@ type ControllerManagerConfig struct {
 	// SPIREServerSocketPath is the path to the SPIRE Server API socket
 	SPIREServerSocketPath string `json:"spireServerSocketPath"`
 
+	// SPIREServerAddress is the TCP address of the remote SPIRE Server API.
+	// When set, the controller manager connects over mTLS using SPIREServerMTLS
+	// instead of dialing SPIREServerSocketPath.
+	// +optional
+	SPIREServerAddress string `json:"spireServerAddress,omitempty"`
+
+	// SPIREServerMTLS is the mTLS configuration for SPIREServerAddress.
+	// +optional
+	SPIREServerMTLS *spireapi.MTLSConfig `json:"spireServerMTLS,omitempty"`
+
 	// LogLevel is the log level for the controller manager
 	LogLevel string `json:"logLevel"`
 
