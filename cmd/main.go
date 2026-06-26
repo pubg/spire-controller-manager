@@ -88,6 +88,8 @@ func init() {
 
 	k8sMetrics.Registry.MustRegister(
 		metrics.PromCounters[metrics.StaticEntryFailures],
+		metrics.PromCounters[metrics.EntryListServerCalls],
+		metrics.PromCounters[metrics.EntryListCacheHits],
 	)
 	//+kubebuilder:scaffold:scheme
 }
