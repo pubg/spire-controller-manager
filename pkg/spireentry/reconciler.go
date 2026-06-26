@@ -663,22 +663,26 @@ func (r *entryReconciler) createEntries(ctx context.Context, declaredEntries []d
 		log.Error(err, "Failed to update entries")
 		return
 	}
-	for i, status := range statuses {
+	for i, declaredEntry := range declaredEntries {
+		if i >= len(statuses) {
+			break
+		}
+		status := statuses[i]
 		switch status.Code {
 		case codes.OK:
-			log.Info("Created entry", entryLogFields(declaredEntries[i].Entry)...)
-			declaredEntries[i].By.IncrementEntrySuccess()
+			log.Info("Created entry", entryLogFields(declaredEntry.Entry)...)
+			declaredEntry.By.IncrementEntrySuccess()
 			if r.entryCache != nil {
-				r.entryCache.upsert(declaredEntries[i].Entry)
+				r.entryCache.upsert(declaredEntry.Entry)
 			}
 		default:
-			declaredEntries[i].By.IncrementEntryFailures()
+			declaredEntry.By.IncrementEntryFailures()
 			if r.entryCache != nil && status.Code == codes.AlreadyExists {
 				// The server already has this entry but the cache did not know
 				// about it: reload on the next reconcile to converge.
 				r.entryCache.invalidate()
 			}
-			log.Error(status.Err(), "Failed to create entry", entryLogFields(declaredEntries[i].Entry)...)
+			log.Error(status.Err(), "Failed to create entry", entryLogFields(declaredEntry.Entry)...)
 		}
 	}
 }
@@ -698,22 +702,26 @@ func (r *entryReconciler) updateEntries(ctx context.Context, declaredEntries []d
 		log.Error(err, "Failed to update entries")
 		return
 	}
-	for i, status := range statuses {
+	for i, declaredEntry := range declaredEntries {
+		if i >= len(statuses) {
+			break
+		}
+		status := statuses[i]
 		switch status.Code {
 		case codes.OK:
-			log.Info("Updated entry", entryLogFields(declaredEntries[i].Entry)...)
+			log.Info("Updated entry", entryLogFields(declaredEntry.Entry)...)
 			if r.entryCache != nil {
-				r.entryCache.upsert(declaredEntries[i].Entry)
+				r.entryCache.upsert(declaredEntry.Entry)
 			}
 		default:
-			declaredEntries[i].By.IncrementEntryFailures()
+			declaredEntry.By.IncrementEntryFailures()
 			if r.entryCache != nil && status.Code == codes.NotFound {
 				// Cache thought this entry existed but the server disagrees:
 				// drop it and reload on the next reconcile to converge.
-				r.entryCache.drop(declaredEntries[i].Entry.ID)
+				r.entryCache.drop(declaredEntry.Entry.ID)
 				r.entryCache.invalidate()
 			}
-			log.Error(status.Err(), "Failed to update entry", entryLogFields(declaredEntries[i].Entry)...)
+			log.Error(status.Err(), "Failed to update entry", entryLogFields(declaredEntry.Entry)...)
 		}
 	}
 }
@@ -730,21 +738,25 @@ func (r *entryReconciler) deleteEntries(ctx context.Context, entries []spireapi.
 		log.Error(err, "Failed to delete entries")
 		return
 	}
-	for i, status := range statuses {
+	for i, entry := range entries {
+		if i >= len(statuses) {
+			break
+		}
+		status := statuses[i]
 		switch status.Code {
 		case codes.OK:
-			log.Info("Deleted entry", entryLogFields(entries[i])...)
+			log.Info("Deleted entry", entryLogFields(entry)...)
 			if r.entryCache != nil {
-				r.entryCache.drop(entries[i].ID)
+				r.entryCache.drop(entry.ID)
 			}
 		default:
 			if r.entryCache != nil && status.Code == codes.NotFound {
 				// Already gone on the server: drop from cache so we do not
 				// re-issue the same delete, and reload to converge.
-				r.entryCache.drop(entries[i].ID)
+				r.entryCache.drop(entry.ID)
 				r.entryCache.invalidate()
 			}
-			log.Error(status.Err(), "Failed to delete entry", entryLogFields(entries[i])...)
+			log.Error(status.Err(), "Failed to delete entry", entryLogFields(entry)...)
 		}
 	}
 }
