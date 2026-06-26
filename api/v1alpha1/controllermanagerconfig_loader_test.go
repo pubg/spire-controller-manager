@@ -8,6 +8,7 @@ import (
 	"time"
 
 	spirev1alpha1 "github.com/spiffe/spire-controller-manager/api/v1alpha1"
+	"github.com/spiffe/spire-controller-manager/pkg/spireapi"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -46,6 +47,30 @@ apiVersion: spire.spiffe.io/v1alpha1
 kind: ControllerManagerConfig
 clusterName: cluster2
 trustDomain: $TRUST_DOMAIN
+`
+
+	fileContentRemoteSPIREServer = `
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ControllerManagerConfig
+clusterName: cluster2
+trustDomain: cluster2.demo
+spireServerAddress: spire.example.test:8081
+spireServerMTLS:
+  certPath: /run/spire/controller/svid.pem
+  keyPath: /run/spire/controller/svid.key
+  bundlePath: /run/spire/controller/bundle.pem
+  serverSPIFFEID: spiffe://cluster2.demo/spire/server
+`
+
+	fileContentRemoteSPIREServerWorkloadAPI = `
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ControllerManagerConfig
+clusterName: cluster2
+trustDomain: cluster2.demo
+spireServerAddress: spire.example.test:8081
+spireServerMTLS:
+  workloadAPISocketPath: unix:///run/spire/agent.sock
+  serverSPIFFEID: spiffe://cluster2.demo/spire/server
 `
 
 	cacheNamespace = `
@@ -174,6 +199,52 @@ func TestLoadOptionsFromFileExpandEnv(t *testing.T) {
 		err := spirev1alpha1.LoadOptionsFromFile(path, scheme, &options, &ctrlConfig, test.expandEnv)
 		require.NoError(t, err)
 		require.Equal(t, test.expectedValue, ctrlConfig.TrustDomain)
+	}
+}
+
+func TestLoadOptionsFromFileRemoteSPIREServer(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		content    string
+		expectMTLS *spireapi.MTLSConfig
+	}{
+		{
+			name:    "file based",
+			content: fileContentRemoteSPIREServer,
+			expectMTLS: &spireapi.MTLSConfig{
+				CertPath:       "/run/spire/controller/svid.pem",
+				KeyPath:        "/run/spire/controller/svid.key",
+				BundlePath:     "/run/spire/controller/bundle.pem",
+				ServerSPIFFEID: "spiffe://cluster2.demo/spire/server",
+			},
+		},
+		{
+			name:    "workload api",
+			content: fileContentRemoteSPIREServerWorkloadAPI,
+			expectMTLS: &spireapi.MTLSConfig{
+				WorkloadAPISocketPath: "unix:///run/spire/agent.sock",
+				ServerSPIFFEID:        "spiffe://cluster2.demo/spire/server",
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+			utilruntime.Must(spirev1alpha1.AddToScheme(scheme))
+
+			tempDir := t.TempDir()
+			path := filepath.Join(tempDir, "config.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(tt.content), 0600))
+
+			options := ctrl.Options{Scheme: scheme}
+			ctrlConfig := spirev1alpha1.ControllerManagerConfig{}
+
+			err := spirev1alpha1.LoadOptionsFromFile(path, scheme, &options, &ctrlConfig, false)
+			require.NoError(t, err)
+
+			require.Equal(t, "spire.example.test:8081", ctrlConfig.SPIREServerAddress)
+			require.Equal(t, tt.expectMTLS, ctrlConfig.SPIREServerMTLS)
+		})
 	}
 }
 

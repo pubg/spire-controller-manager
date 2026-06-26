@@ -414,7 +414,7 @@ func (r *entryReconciler) splitEntries(entries []spireapi.Entry) (currentEntries
 }
 
 func (r *entryReconciler) getUnsupportedFields(ctx context.Context) (map[spireapi.Field]struct{}, error) {
-	return r.config.EntryClient.GetUnsupportedFields(ctx, r.config.TrustDomain.Name())
+	return r.config.EntryClient.GetUnsupportedFields(ctx, r.config.TrustDomain.Name(), r.config.EntryIDPrefix)
 }
 
 func (r *entryReconciler) listClusterStaticEntries(ctx context.Context, expandEnv bool) ([]*ClusterStaticEntry, error) {

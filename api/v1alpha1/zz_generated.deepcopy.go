@@ -458,6 +458,11 @@ func (in *ControllerManagerConfig) DeepCopyInto(out *ControllerManagerConfig) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.SPIREServerMTLS != nil {
+		in, out := &in.SPIREServerMTLS, &out.SPIREServerMTLS
+		*out = new(spireapi.MTLSConfig)
+		**out = **in
+	}
 	if in.Grpc != nil {
 		in, out := &in.Grpc, &out.Grpc
 		*out = new(spireapi.GrpcConfig)

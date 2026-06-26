@@ -164,6 +164,7 @@ func TestGetUnsupportedFields(t *testing.T) {
 		createEntryErr         error
 		deleteEntryErr         error
 		entryExists            bool
+		entryIDPrefix          string
 
 		expectErr    error
 		expectFields map[Field]struct{}
@@ -201,6 +202,11 @@ func TestGetUnsupportedFields(t *testing.T) {
 			entryExists:  true,
 			expectFields: make(map[Field]struct{}),
 		},
+		{
+			desc:          "uses entry ID prefix",
+			entryIDPrefix: "test-cluster.",
+			expectFields:  make(map[Field]struct{}),
+		},
 	} {
 		t.Run(tc.desc, func(t *testing.T) {
 			server, client := startEntryAPIServer(t)
@@ -222,7 +228,7 @@ func TestGetUnsupportedFields(t *testing.T) {
 					})
 			}
 
-			resp, err := client.GetUnsupportedFields(ctx, "domain.test")
+			resp, err := client.GetUnsupportedFields(ctx, "domain.test", tc.entryIDPrefix)
 			if tc.expectErr != nil {
 				assertErrorIs(t, err, tc.expectErr)
 				assert.Empty(t, resp)

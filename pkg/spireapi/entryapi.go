@@ -45,7 +45,7 @@ type EntryClient interface {
 	CreateEntries(ctx context.Context, entries []Entry) ([]Status, error)
 	UpdateEntries(ctx context.Context, entries []Entry) ([]Status, error)
 	DeleteEntries(ctx context.Context, entryIDs []string) ([]Status, error)
-	GetUnsupportedFields(ctx context.Context, td string) (map[Field]struct{}, error)
+	GetUnsupportedFields(ctx context.Context, td string, entryIDPrefix string) (map[Field]struct{}, error)
 }
 
 func NewEntryClient(conn grpc.ClientConnInterface) EntryClient {
@@ -76,10 +76,16 @@ func (c entryClient) ListEntries(ctx context.Context) ([]Entry, error) {
 	return entriesFromAPI(entries)
 }
 
-func (c entryClient) GetUnsupportedFields(ctx context.Context, td string) (map[Field]struct{}, error) {
+func (c entryClient) GetUnsupportedFields(ctx context.Context, td string, entryIDPrefix string) (map[Field]struct{}, error) {
+	entryID := ""
+	if entryIDPrefix != "" {
+		entryID = entryIDPrefix + "spire-controller-manager.unsupported-fields-test"
+	}
+
 	resp, err := c.api.BatchCreateEntry(ctx, &entryv1.BatchCreateEntryRequest{
 		Entries: []*types.Entry{
 			{
+				Id: entryID,
 				ParentId: &types.SPIFFEID{
 					TrustDomain: td,
 					Path:        "/spire-controller-manager/unsupported-fields-test",
