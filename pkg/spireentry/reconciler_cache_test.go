@@ -24,7 +24,10 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/spiffe/spire-controller-manager/pkg/metrics"
 	"github.com/spiffe/spire-controller-manager/pkg/spireapi"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -303,6 +306,56 @@ func TestEntryListCache(t *testing.T) {
 		require.Equal(t, 1, fake.listCalls)
 		require.ElementsMatch(t, []string{"test.a"}, ids(cur2))
 		require.ElementsMatch(t, []string{"old.x"}, ids(del2), "cleanup partition must survive cached reads")
+	})
+}
+
+// counterValue reads the current value of a prometheus counter.
+func counterValue(t *testing.T, c prometheus.Counter) float64 {
+	t.Helper()
+	var m dto.Metric
+	require.NoError(t, c.Write(&m))
+	return m.GetCounter().GetValue()
+}
+
+func TestEntryListMetrics(t *testing.T) {
+	newCounters := func() map[string]prometheus.Counter {
+		return map[string]prometheus.Counter{
+			metrics.EntryListServerCalls: prometheus.NewCounter(prometheus.CounterOpts{Name: "test_entry_list_server_calls"}),
+			metrics.EntryListCacheHits:   prometheus.NewCounter(prometheus.CounterOpts{Name: "test_entry_list_cache_hits"}),
+		}
+	}
+
+	bubble(t, "cache miss counts a server call, subsequent hit counts a cache hit", func(t *testing.T) {
+		fake := &fakeEntryClient{list: []spireapi.Entry{testEntry("test.a")}}
+		r := newCacheReconciler(fake, cacheCfg())
+		r.promCounter = newCounters()
+		ctx := testCtx()
+
+		// First reconcile: cold cache -> server list.
+		_, _, err := r.listEntries(ctx)
+		require.NoError(t, err)
+		require.Equal(t, 1.0, counterValue(t, r.promCounter[metrics.EntryListServerCalls]))
+		require.Equal(t, 0.0, counterValue(t, r.promCounter[metrics.EntryListCacheHits]))
+
+		// Second reconcile: served from the fresh cache -> cache hit.
+		_, _, err = r.listEntries(ctx)
+		require.NoError(t, err)
+		require.Equal(t, 1.0, counterValue(t, r.promCounter[metrics.EntryListServerCalls]))
+		require.Equal(t, 1.0, counterValue(t, r.promCounter[metrics.EntryListCacheHits]))
+	})
+
+	bubble(t, "disabled cache counts every reconcile as a server call", func(t *testing.T) {
+		fake := &fakeEntryClient{list: []spireapi.Entry{testEntry("test.a")}}
+		cfg := cacheCfg()
+		cfg.EnableEntryListCache = false
+		r := newCacheReconciler(fake, cfg)
+		r.promCounter = newCounters()
+		ctx := testCtx()
+
+		_, _, _ = r.listEntries(ctx)
+		_, _, _ = r.listEntries(ctx)
+		require.Equal(t, 2.0, counterValue(t, r.promCounter[metrics.EntryListServerCalls]))
+		require.Equal(t, 0.0, counterValue(t, r.promCounter[metrics.EntryListCacheHits]))
 	})
 }
 
