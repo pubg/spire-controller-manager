@@ -374,11 +374,6 @@ func (r *entryReconciler) shouldProcessOrDeleteEntryID(entry spireapi.Entry) (bo
 	return false, false
 }
 
-// listEntries returns the entries to process and the entries marked only for
-// cleanup deletion. When the entry cache is enabled it serves from the
-// in-memory cache while fresh, avoiding a full ListEntries RPC to the SPIRE
-// server on every reconcile; otherwise it lists from the server and (when the
-// cache is enabled) repopulates it.
 // incCounter increments a prometheus counter if it is registered. It is
 // nil-safe so unit tests can construct an entryReconciler without wiring the
 // metrics map.
@@ -388,6 +383,11 @@ func (r *entryReconciler) incCounter(name string) {
 	}
 }
 
+// listEntries returns the entries to process and the entries marked only for
+// cleanup deletion. When the entry cache is enabled it serves from the
+// in-memory cache while fresh, avoiding a full ListEntries RPC to the SPIRE
+// server on every reconcile; otherwise it lists from the server and (when the
+// cache is enabled) repopulates it.
 func (r *entryReconciler) listEntries(ctx context.Context) ([]spireapi.Entry, []spireapi.Entry, error) {
 	if r.entryCache != nil && r.entryCache.fresh() {
 		r.incCounter(metrics.EntryListCacheHits)
