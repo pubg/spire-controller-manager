@@ -92,11 +92,25 @@ type ReconcilerConfig struct {
 	// for rendered pod entries. Only used when EnableEntryRenderCache is true.
 	// If zero, defaults to defaultEntryRenderCacheSize.
 	EntryRenderCacheSize int
+
+	// EnableEntryListCache caches the current SPIRE entries in memory so that
+	// each reconcile does not issue a full ListEntries RPC. Requires
+	// EntryIDPrefix to be set (so created entry IDs are known locally).
+	EnableEntryListCache bool
+
+	// EntryListCacheReloadInterval is how often the entry list cache is fully
+	// reloaded from the SPIRE server. Only used when EnableEntryListCache is
+	// true. If zero, defaults to defaultEntryListCacheReloadInterval.
+	EntryListCacheReloadInterval time.Duration
 }
 
 const (
 	// defaultEntryRenderCacheSize is the default size for the LRU cache
 	defaultEntryRenderCacheSize = 300000
+
+	// defaultEntryListCacheReloadInterval is the default full-reload interval
+	// for the entry list cache.
+	defaultEntryListCacheReloadInterval = time.Hour
 )
 
 func Reconciler(config ReconcilerConfig) reconciler.Reconciler {
@@ -105,6 +119,14 @@ func Reconciler(config ReconcilerConfig) reconciler.Reconciler {
 		promCounter:              metrics.PromCounters,
 		staticManifestPath:       config.StaticManifestPath,
 		expandEnvStaticManifests: config.ExpandEnvStaticManifests,
+	}
+
+	if config.EnableEntryListCache {
+		reloadAfter := config.EntryListCacheReloadInterval
+		if reloadAfter <= 0 {
+			reloadAfter = defaultEntryListCacheReloadInterval
+		}
+		r.entryCache = &entryListCache{reloadAfter: reloadAfter}
 	}
 
 	if config.EnableEntryRenderCache {
@@ -136,6 +158,11 @@ type entryReconciler struct {
 	expandEnvStaticManifests bool
 
 	renderCache *lru.Cache[string, *cachedEntry] // thread-safe LRU cache for pod entries
+
+	// entryCache mirrors the current SPIRE entries to avoid a full ListEntries
+	// RPC on every reconcile. nil when disabled. Accessed only from the single
+	// reconcile goroutine (pkg/reconciler), so it needs no locking.
+	entryCache *entryListCache
 }
 
 type cachedEntry struct {
@@ -347,15 +374,34 @@ func (r *entryReconciler) shouldProcessOrDeleteEntryID(entry spireapi.Entry) (bo
 	return false, false
 }
 
+// listEntries returns the entries to process and the entries marked only for
+// cleanup deletion. When the entry cache is enabled it serves from the
+// in-memory cache while fresh, avoiding a full ListEntries RPC to the SPIRE
+// server on every reconcile; otherwise it lists from the server and (when the
+// cache is enabled) repopulates it.
 func (r *entryReconciler) listEntries(ctx context.Context) ([]spireapi.Entry, []spireapi.Entry, error) {
-	// TODO: cache?
-	var deleteOnlyEntries []spireapi.Entry
-	var currentEntries []spireapi.Entry
-	tmpvals, err := r.config.EntryClient.ListEntries(ctx)
-	if err != nil {
-		return currentEntries, deleteOnlyEntries, err
+	if r.entryCache != nil && r.entryCache.fresh() {
+		currentEntries, deleteOnlyEntries := r.splitEntries(r.entryCache.snapshot())
+		return currentEntries, deleteOnlyEntries, nil
 	}
-	for _, value := range tmpvals {
+
+	entries, err := r.config.EntryClient.ListEntries(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	currentEntries, deleteOnlyEntries := r.splitEntries(entries)
+	if r.entryCache != nil {
+		r.entryCache.replace(append(currentEntries, deleteOnlyEntries...))
+	}
+	return currentEntries, deleteOnlyEntries, nil
+}
+
+// splitEntries partitions entries into the set to process and the set marked
+// only for cleanup deletion, per shouldProcessOrDeleteEntryID. It is recomputed
+// on every call (including cached reads) so the partition stays consistent with
+// the EntryIDPrefix/Cleanup config.
+func (r *entryReconciler) splitEntries(entries []spireapi.Entry) (currentEntries, deleteOnlyEntries []spireapi.Entry) {
+	for _, value := range entries {
 		proc, del := r.shouldProcessOrDeleteEntryID(value)
 		if proc {
 			currentEntries = append(currentEntries, value)
@@ -364,7 +410,7 @@ func (r *entryReconciler) listEntries(ctx context.Context) ([]spireapi.Entry, []
 			deleteOnlyEntries = append(deleteOnlyEntries, value)
 		}
 	}
-	return currentEntries, deleteOnlyEntries, nil
+	return currentEntries, deleteOnlyEntries
 }
 
 func (r *entryReconciler) getUnsupportedFields(ctx context.Context) (map[spireapi.Field]struct{}, error) {
@@ -609,6 +655,11 @@ func (r *entryReconciler) createEntries(ctx context.Context, declaredEntries []d
 		for _, declaredEntry := range declaredEntries {
 			declaredEntry.By.IncrementEntryFailures()
 		}
+		// Batched RPC may have partially succeeded before failing; reload next
+		// reconcile rather than trusting the now-uncertain cache.
+		if r.entryCache != nil {
+			r.entryCache.invalidate()
+		}
 		log.Error(err, "Failed to update entries")
 		return
 	}
@@ -617,8 +668,16 @@ func (r *entryReconciler) createEntries(ctx context.Context, declaredEntries []d
 		case codes.OK:
 			log.Info("Created entry", entryLogFields(declaredEntries[i].Entry)...)
 			declaredEntries[i].By.IncrementEntrySuccess()
+			if r.entryCache != nil {
+				r.entryCache.upsert(declaredEntries[i].Entry)
+			}
 		default:
 			declaredEntries[i].By.IncrementEntryFailures()
+			if r.entryCache != nil && status.Code == codes.AlreadyExists {
+				// The server already has this entry but the cache did not know
+				// about it: reload on the next reconcile to converge.
+				r.entryCache.invalidate()
+			}
 			log.Error(status.Err(), "Failed to create entry", entryLogFields(declaredEntries[i].Entry)...)
 		}
 	}
@@ -631,6 +690,11 @@ func (r *entryReconciler) updateEntries(ctx context.Context, declaredEntries []d
 		for _, declaredEntry := range declaredEntries {
 			declaredEntry.By.IncrementEntryFailures()
 		}
+		// Batched RPC may have partially succeeded before failing; reload next
+		// reconcile rather than trusting the now-uncertain cache.
+		if r.entryCache != nil {
+			r.entryCache.invalidate()
+		}
 		log.Error(err, "Failed to update entries")
 		return
 	}
@@ -638,8 +702,17 @@ func (r *entryReconciler) updateEntries(ctx context.Context, declaredEntries []d
 		switch status.Code {
 		case codes.OK:
 			log.Info("Updated entry", entryLogFields(declaredEntries[i].Entry)...)
+			if r.entryCache != nil {
+				r.entryCache.upsert(declaredEntries[i].Entry)
+			}
 		default:
 			declaredEntries[i].By.IncrementEntryFailures()
+			if r.entryCache != nil && status.Code == codes.NotFound {
+				// Cache thought this entry existed but the server disagrees:
+				// drop it and reload on the next reconcile to converge.
+				r.entryCache.drop(declaredEntries[i].Entry.ID)
+				r.entryCache.invalidate()
+			}
 			log.Error(status.Err(), "Failed to update entry", entryLogFields(declaredEntries[i].Entry)...)
 		}
 	}
@@ -649,6 +722,11 @@ func (r *entryReconciler) deleteEntries(ctx context.Context, entries []spireapi.
 	log := log.FromContext(ctx)
 	statuses, err := r.config.EntryClient.DeleteEntries(ctx, idsFromEntries(entries))
 	if err != nil {
+		// Batched RPC may have partially succeeded before failing; reload next
+		// reconcile rather than trusting the now-uncertain cache.
+		if r.entryCache != nil {
+			r.entryCache.invalidate()
+		}
 		log.Error(err, "Failed to delete entries")
 		return
 	}
@@ -656,7 +734,16 @@ func (r *entryReconciler) deleteEntries(ctx context.Context, entries []spireapi.
 		switch status.Code {
 		case codes.OK:
 			log.Info("Deleted entry", entryLogFields(entries[i])...)
+			if r.entryCache != nil {
+				r.entryCache.drop(entries[i].ID)
+			}
 		default:
+			if r.entryCache != nil && status.Code == codes.NotFound {
+				// Already gone on the server: drop from cache so we do not
+				// re-issue the same delete, and reload to converge.
+				r.entryCache.drop(entries[i].ID)
+				r.entryCache.invalidate()
+			}
 			log.Error(status.Err(), "Failed to delete entry", entryLogFields(entries[i])...)
 		}
 	}

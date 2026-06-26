@@ -242,7 +242,9 @@ func parseConfig() (Config, error) {
 		"reconcile ClusterFederatedTrustDomains", retval.reconcile.ClusterFederatedTrustDomains,
 		"reconcile ClusterStaticEntries", retval.reconcile.ClusterStaticEntries,
 		"entryIDPrefix", retval.ctrlConfig.EntryIDPrefix,
-		"entryIDPrefixCleanup", printCleanup)
+		"entryIDPrefixCleanup", printCleanup,
+		"enableEntryListCache", retval.ctrlConfig.EnableEntryListCache,
+		"entryListCacheReloadInterval", retval.ctrlConfig.EntryListCacheReloadInterval)
 
 	switch {
 	case retval.ctrlConfig.TrustDomain == "":
@@ -252,6 +254,8 @@ func parseConfig() (Config, error) {
 		return retval, errors.New("cluster name is required configuration")
 	case retval.ctrlConfig.ValidatingWebhookConfigurationName == "":
 		return retval, errors.New("validating webhook configuration name is required configuration")
+	case retval.ctrlConfig.EnableEntryListCache && retval.ctrlConfig.EntryIDPrefix == "":
+		return retval, errors.New("enableEntryListCache requires entryIDPrefix to be set")
 	case retval.ctrlConfig.ControllerManagerConfigurationSpec.Webhook.CertDir != "":
 		setupLog.Info("certDir configuration is ignored", "certDir", retval.ctrlConfig.ControllerManagerConfigurationSpec.Webhook.CertDir)
 	}
@@ -362,6 +366,9 @@ func run(mainConfig Config) (err error) {
 			EntryIDPrefixCleanup:   mainConfig.ctrlConfig.EntryIDPrefixCleanup,
 			EnableEntryRenderCache: mainConfig.ctrlConfig.EnableEntryRenderCache,
 			EntryRenderCacheSize:   mainConfig.ctrlConfig.EntryRenderCacheSize,
+
+			EnableEntryListCache:         mainConfig.ctrlConfig.EnableEntryListCache,
+			EntryListCacheReloadInterval: mainConfig.ctrlConfig.EntryListCacheReloadInterval,
 		})
 	}
 
@@ -523,6 +530,9 @@ func staticRun(mainConfig Config) (err error) {
 			ExpandEnvStaticManifests: mainConfig.ctrlConfig.ExpandEnvStaticManifests,
 			EnableEntryRenderCache:   mainConfig.ctrlConfig.EnableEntryRenderCache,
 			EntryRenderCacheSize:     mainConfig.ctrlConfig.EntryRenderCacheSize,
+
+			EnableEntryListCache:         mainConfig.ctrlConfig.EnableEntryListCache,
+			EntryListCacheReloadInterval: mainConfig.ctrlConfig.EntryListCacheReloadInterval,
 		})
 		go func() {
 			err := entryReconciler.Run(ctx)

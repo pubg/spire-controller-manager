@@ -167,6 +167,22 @@ type ControllerManagerConfigurationSpec struct {
 	// Defaults to 300000 if unset or zero.
 	// +optional
 	EntryRenderCacheSize int `json:"entryRenderCacheSize,omitempty"`
+
+	// EnableEntryListCache caches the current SPIRE entries in memory so that
+	// each reconcile does not issue a full ListEntries RPC to the SPIRE server.
+	// The cache is updated in place after each create/update/delete, fully
+	// reloaded every EntryListCacheReloadInterval, and force-reloaded whenever a
+	// create/update/delete reports drift (AlreadyExists/NotFound). Requires
+	// EntryIDPrefix to be set so created entry IDs are known locally.
+	// Defaults to false.
+	// +optional
+	EnableEntryListCache bool `json:"enableEntryListCache,omitempty"`
+
+	// EntryListCacheReloadInterval is how often the entry list cache is fully
+	// reloaded from the SPIRE server as a backstop against external drift. Only
+	// used when enableEntryListCache is true. Defaults to 1h if unset or zero.
+	// +optional
+	EntryListCacheReloadInterval time.Duration `json:"entryListCacheReloadInterval,omitempty"`
 }
 
 // ReconcileConfig configuration used to enable/disable syncing various types
