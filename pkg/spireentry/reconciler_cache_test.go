@@ -84,7 +84,7 @@ func (f *fakeEntryClient) DeleteEntries(_ context.Context, ids []string) ([]spir
 	return statuses(len(ids), f.deleteCode), nil
 }
 
-func (f *fakeEntryClient) GetUnsupportedFields(context.Context, string) (map[spireapi.Field]struct{}, error) {
+func (f *fakeEntryClient) GetUnsupportedFields(context.Context, string, string) (map[spireapi.Field]struct{}, error) {
 	return map[spireapi.Field]struct{}{}, nil
 }
 
