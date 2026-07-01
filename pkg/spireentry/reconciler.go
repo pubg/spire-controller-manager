@@ -404,7 +404,7 @@ func (r *entryReconciler) incCounter(name string) {
 // server on every reconcile; otherwise it lists from the server and (when the
 // cache is enabled) repopulates it.
 func (r *entryReconciler) listEntries(ctx context.Context, hints []string) ([]spireapi.Entry, []spireapi.Entry, error) {
-	filterKey := entryListFilterKey(hints)
+	filterKey := strings.Join(hints, "\x00")
 	if r.entryCache != nil && r.entryCache.fresh(filterKey) {
 		r.incCounter(metrics.EntryListCacheHits)
 		currentEntries, deleteOnlyEntries := r.splitEntries(r.entryCache.snapshot())
@@ -428,35 +428,18 @@ func (r *entryReconciler) entryListHints(clusterSPIFFEIDs []*ClusterSPIFFEID, cl
 		return nil
 	}
 
-	var hints []string
-	for _, clusterSPIFFEID := range clusterSPIFFEIDs {
-		if clusterSPIFFEID.Spec.Hint == "" {
-			return nil
-		}
-		hints = append(hints, clusterSPIFFEID.Spec.Hint)
+	hints := lo.Map(clusterSPIFFEIDs, func(clusterSPIFFEID *ClusterSPIFFEID, _ int) string {
+		return clusterSPIFFEID.Spec.Hint
+	})
+	hints = append(hints, lo.Map(clusterStaticEntries, func(clusterStaticEntry *ClusterStaticEntry, _ int) string {
+		return clusterStaticEntry.Spec.Hint
+	})...)
+	if lo.Contains(hints, "") {
+		return nil
 	}
-	for _, clusterStaticEntry := range clusterStaticEntries {
-		if clusterStaticEntry.Spec.Hint == "" {
-			return nil
-		}
-		hints = append(hints, clusterStaticEntry.Spec.Hint)
-	}
-	return uniqueStrings(hints)
-}
-
-func uniqueStrings(values []string) []string {
-	out := lo.Uniq(lo.Filter(values, func(value string, _ int) bool {
-		return value != ""
-	}))
-	sort.Strings(out)
-	return out
-}
-
-func entryListFilterKey(hints []string) string {
-	if len(hints) == 0 {
-		return ""
-	}
-	return strings.Join(uniqueStrings(hints), "\x00")
+	hints = lo.Uniq(hints)
+	sort.Strings(hints)
+	return hints
 }
 
 // splitEntries partitions entries into the set to process and the set marked
