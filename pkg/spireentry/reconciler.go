@@ -34,6 +34,7 @@ import (
 	"github.com/google/uuid"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/samber/lo"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"google.golang.org/grpc/codes"
 	corev1 "k8s.io/api/core/v1"
@@ -444,18 +445,9 @@ func (r *entryReconciler) entryListHints(clusterSPIFFEIDs []*ClusterSPIFFEID, cl
 }
 
 func uniqueStrings(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
+	out := lo.Uniq(lo.Filter(values, func(value string, _ int) bool {
+		return value != ""
+	}))
 	sort.Strings(out)
 	return out
 }

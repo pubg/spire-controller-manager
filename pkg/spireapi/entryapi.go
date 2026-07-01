@@ -19,7 +19,9 @@ package spireapi
 import (
 	"context"
 	"fmt"
+	"sync"
 
+	"github.com/samber/lo"
 	entryv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/entry/v1"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
 	"google.golang.org/grpc"
@@ -58,22 +60,51 @@ type entryClient struct {
 }
 
 func (c entryClient) ListEntries(ctx context.Context, hints ...string) ([]Entry, error) {
-	filterHints := uniqueNonEmptyStrings(hints)
+	filterHints := lo.Uniq(lo.Filter(hints, func(hint string, _ int) bool {
+		return hint != ""
+	}))
 	if len(filterHints) == 0 {
 		return c.listEntries(ctx, nil)
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	var errOnce sync.Once
+	var firstErr error
+	entriesByHint := make([][]Entry, len(filterHints))
+
+	for i, hint := range filterHints {
+		wg.Add(1)
+		go func(i int, hint string) {
+			defer wg.Done()
+
+			hintEntries, err := c.listEntries(ctx, &entryv1.ListEntriesRequest_Filter{
+				ByHint: wrapperspb.String(hint),
+			})
+			if err != nil {
+				errOnce.Do(func() {
+					firstErr = err
+					cancel()
+				})
+				return
+			}
+			entriesByHint[i] = hintEntries
+		}(i, hint)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+
 	var entries []Entry
-	for _, hint := range filterHints {
-		hintEntries, err := c.listEntries(ctx, &entryv1.ListEntriesRequest_Filter{
-			ByHint: wrapperspb.String(hint),
-		})
-		if err != nil {
-			return nil, err
-		}
+	for _, hintEntries := range entriesByHint {
 		entries = append(entries, hintEntries...)
 	}
-	return entries, nil
+	return lo.UniqBy(entries, func(entry Entry) string {
+		return entry.ID
+	}), nil
 }
 
 func (c entryClient) listEntries(ctx context.Context, filter *entryv1.ListEntriesRequest_Filter) ([]Entry, error) {
@@ -95,22 +126,6 @@ func (c entryClient) listEntries(ctx context.Context, filter *entryv1.ListEntrie
 		}
 	}
 	return entriesFromAPI(entries)
-}
-
-func uniqueNonEmptyStrings(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	return out
 }
 
 func (c entryClient) GetUnsupportedFields(ctx context.Context, td string, entryIDPrefix string) (map[Field]struct{}, error) {
