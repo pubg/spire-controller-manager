@@ -92,6 +92,26 @@ func TestEntryAPIListEntries(t *testing.T) {
 	}
 }
 
+func TestEntryAPIListEntriesByHint(t *testing.T) {
+	server, client := startEntryAPIServer(t)
+	withHint := func(entry Entry, hint string) Entry {
+		entry.Hint = hint
+		return entry
+	}
+	server.setEntries(t,
+		withHint(entry1, "cluster-a"),
+		withHint(entry2, "cluster-b"),
+		withHint(entry3, "cluster-a"),
+	)
+
+	actualEntries, err := client.ListEntries(ctx, "cluster-a", "cluster-a", "")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []Entry{
+		withHint(entry1, "cluster-a"),
+		withHint(entry3, "cluster-a"),
+	}, actualEntries)
+}
+
 func TestCreateEntries(t *testing.T) {
 	server, client := startEntryAPIServer(t)
 
@@ -408,8 +428,18 @@ func (s *entryServer) ListEntries(_ context.Context, req *entryv1.ListEntriesReq
 	s.mtx.RLock()
 	defer s.mtx.RUnlock()
 
-	start, end, more := listBounds(req.PageToken, int(req.PageSize), len(s.entries), func(i int) string { return s.entries[i].Id })
-	for _, entry := range s.entries[start:end] {
+	entries := s.entries
+	if hint := req.GetFilter().GetByHint().GetValue(); hint != "" {
+		entries = nil
+		for _, entry := range s.entries {
+			if entry.Hint == hint {
+				entries = append(entries, entry)
+			}
+		}
+	}
+
+	start, end, more := listBounds(req.PageToken, int(req.PageSize), len(entries), func(i int) string { return entries[i].Id })
+	for _, entry := range entries[start:end] {
 		resp.Entries = append(resp.Entries, entry)
 		if more {
 			resp.NextPageToken = entry.Id

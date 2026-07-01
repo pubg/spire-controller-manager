@@ -193,6 +193,13 @@ type ControllerManagerConfigurationSpec struct {
 	// used when enableEntryListCache is true. Defaults to 1h if unset or zero.
 	// +optional
 	EntryListCacheReloadInterval time.Duration `json:"entryListCacheReloadInterval,omitempty"`
+
+	// EnableEntryListHintFilter limits SPIRE ListEntries calls to hints used by
+	// managed ClusterSPIFFEID and ClusterStaticEntry resources. If any managed
+	// resource has an empty hint, the controller falls back to an unfiltered list.
+	// Defaults to false.
+	// +optional
+	EnableEntryListHintFilter bool `json:"enableEntryListHintFilter,omitempty"`
 }
 
 // ReconcileConfig configuration used to enable/disable syncing various types

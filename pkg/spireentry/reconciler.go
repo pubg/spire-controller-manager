@@ -102,6 +102,12 @@ type ReconcilerConfig struct {
 	// reloaded from the SPIRE server. Only used when EnableEntryListCache is
 	// true. If zero, defaults to defaultEntryListCacheReloadInterval.
 	EntryListCacheReloadInterval time.Duration
+
+	// EnableEntryListHintFilter uses the hints from managed ClusterSPIFFEID and
+	// ClusterStaticEntry resources to narrow ListEntries calls at the SPIRE
+	// server. If any managed resource has an empty hint, the reconciler falls
+	// back to an unfiltered list to preserve compatibility.
+	EnableEntryListHintFilter bool
 }
 
 const (
@@ -190,8 +196,31 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 	}
 	unsupportedFields := r.unsupportedFields
 
+	var err error
+	clusterStaticEntries := []*ClusterStaticEntry{}
+	if r.config.Reconcile.ClusterStaticEntries {
+		// Load and add entry state for ClusterStaticEntries
+		clusterStaticEntries, err = r.listClusterStaticEntries(ctx, r.expandEnvStaticManifests)
+		if err != nil {
+			log.Error(err, "Failed to list ClusterStaticEntries")
+			return
+		}
+	}
+
+	clusterSPIFFEIDs := []*ClusterSPIFFEID{}
+	if r.config.Reconcile.ClusterSPIFFEIDs {
+		// Load and add entry state for ClusterSPIFFEIDs
+		clusterSPIFFEIDs, err = r.listClusterSPIFFEIDs(ctx)
+		if err != nil {
+			log.Error(err, "Failed to list ClusterSPIFFEIDs")
+			return
+		}
+	}
+
+	entryListHints := r.entryListHints(clusterSPIFFEIDs, clusterStaticEntries)
+
 	// Load current entries from SPIRE server.
-	currentEntries, deleteOnlyEntries, err := r.listEntries(ctx)
+	currentEntries, deleteOnlyEntries, err := r.listEntries(ctx, entryListHints)
 	if err != nil {
 		log.Error(err, "Failed to list SPIRE entries")
 		return
@@ -203,26 +232,11 @@ func (r *entryReconciler) reconcile(ctx context.Context) {
 		state.AddCurrent(entry)
 	}
 
-	clusterStaticEntries := []*ClusterStaticEntry{}
 	if r.config.Reconcile.ClusterStaticEntries {
-		// Load and add entry state for ClusterStaticEntries
-		clusterStaticEntries, err = r.listClusterStaticEntries(ctx, r.expandEnvStaticManifests)
-		if err != nil {
-			log.Error(err, "Failed to list ClusterStaticEntries")
-			return
-		}
 		r.addClusterStaticEntryEntriesState(ctx, state, clusterStaticEntries)
 	}
 
-	clusterSPIFFEIDs := []*ClusterSPIFFEID{}
 	if r.config.Reconcile.ClusterSPIFFEIDs {
-		// Load and add entry state for ClusterSPIFFEIDs
-		clusterSPIFFEIDs, err = r.listClusterSPIFFEIDs(ctx)
-		if err != nil {
-			log.Error(err, "Failed to list ClusterSPIFFEIDs")
-			return
-		}
-
 		// Pre-load all nodes into a map to avoid per-pod Get() calls,
 		// which each incur a deep copy and mutex lock on the informer cache.
 		nodeMap, err := r.buildNodeMap(ctx)
@@ -388,23 +402,69 @@ func (r *entryReconciler) incCounter(name string) {
 // in-memory cache while fresh, avoiding a full ListEntries RPC to the SPIRE
 // server on every reconcile; otherwise it lists from the server and (when the
 // cache is enabled) repopulates it.
-func (r *entryReconciler) listEntries(ctx context.Context) ([]spireapi.Entry, []spireapi.Entry, error) {
-	if r.entryCache != nil && r.entryCache.fresh() {
+func (r *entryReconciler) listEntries(ctx context.Context, hints []string) ([]spireapi.Entry, []spireapi.Entry, error) {
+	filterKey := entryListFilterKey(hints)
+	if r.entryCache != nil && r.entryCache.fresh(filterKey) {
 		r.incCounter(metrics.EntryListCacheHits)
 		currentEntries, deleteOnlyEntries := r.splitEntries(r.entryCache.snapshot())
 		return currentEntries, deleteOnlyEntries, nil
 	}
 
 	r.incCounter(metrics.EntryListServerCalls)
-	entries, err := r.config.EntryClient.ListEntries(ctx)
+	entries, err := r.config.EntryClient.ListEntries(ctx, hints...)
 	if err != nil {
 		return nil, nil, err
 	}
 	currentEntries, deleteOnlyEntries := r.splitEntries(entries)
 	if r.entryCache != nil {
-		r.entryCache.replace(append(currentEntries, deleteOnlyEntries...))
+		r.entryCache.replace(filterKey, append(currentEntries, deleteOnlyEntries...))
 	}
 	return currentEntries, deleteOnlyEntries, nil
+}
+
+func (r *entryReconciler) entryListHints(clusterSPIFFEIDs []*ClusterSPIFFEID, clusterStaticEntries []*ClusterStaticEntry) []string {
+	if !r.config.EnableEntryListHintFilter {
+		return nil
+	}
+
+	var hints []string
+	for _, clusterSPIFFEID := range clusterSPIFFEIDs {
+		if clusterSPIFFEID.Spec.Hint == "" {
+			return nil
+		}
+		hints = append(hints, clusterSPIFFEID.Spec.Hint)
+	}
+	for _, clusterStaticEntry := range clusterStaticEntries {
+		if clusterStaticEntry.Spec.Hint == "" {
+			return nil
+		}
+		hints = append(hints, clusterStaticEntry.Spec.Hint)
+	}
+	return uniqueStrings(hints)
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func entryListFilterKey(hints []string) string {
+	if len(hints) == 0 {
+		return ""
+	}
+	return strings.Join(uniqueStrings(hints), "\x00")
 }
 
 // splitEntries partitions entries into the set to process and the set marked

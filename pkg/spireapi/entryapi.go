@@ -24,6 +24,7 @@ import (
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -41,7 +42,7 @@ const (
 type Field string
 
 type EntryClient interface {
-	ListEntries(ctx context.Context) ([]Entry, error)
+	ListEntries(ctx context.Context, hints ...string) ([]Entry, error)
 	CreateEntries(ctx context.Context, entries []Entry) ([]Status, error)
 	UpdateEntries(ctx context.Context, entries []Entry) ([]Status, error)
 	DeleteEntries(ctx context.Context, entryIDs []string) ([]Status, error)
@@ -56,11 +57,31 @@ type entryClient struct {
 	api entryv1.EntryClient
 }
 
-func (c entryClient) ListEntries(ctx context.Context) ([]Entry, error) {
+func (c entryClient) ListEntries(ctx context.Context, hints ...string) ([]Entry, error) {
+	filterHints := uniqueNonEmptyStrings(hints)
+	if len(filterHints) == 0 {
+		return c.listEntries(ctx, nil)
+	}
+
+	var entries []Entry
+	for _, hint := range filterHints {
+		hintEntries, err := c.listEntries(ctx, &entryv1.ListEntriesRequest_Filter{
+			ByHint: wrapperspb.String(hint),
+		})
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, hintEntries...)
+	}
+	return entries, nil
+}
+
+func (c entryClient) listEntries(ctx context.Context, filter *entryv1.ListEntriesRequest_Filter) ([]Entry, error) {
 	var entries []*types.Entry
 	var pageToken string
 	for {
 		resp, err := c.api.ListEntries(ctx, &entryv1.ListEntriesRequest{
+			Filter:    filter,
 			PageToken: pageToken,
 			PageSize:  entryListPageSize,
 		})
@@ -74,6 +95,22 @@ func (c entryClient) ListEntries(ctx context.Context) ([]Entry, error) {
 		}
 	}
 	return entriesFromAPI(entries)
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func (c entryClient) GetUnsupportedFields(ctx context.Context, td string, entryIDPrefix string) (map[Field]struct{}, error) {

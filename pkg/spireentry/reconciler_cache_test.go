@@ -27,6 +27,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	spirev1alpha1 "github.com/spiffe/spire-controller-manager/api/v1alpha1"
 	"github.com/spiffe/spire-controller-manager/pkg/metrics"
 	"github.com/spiffe/spire-controller-manager/pkg/spireapi"
 	"github.com/stretchr/testify/require"
@@ -41,6 +42,7 @@ import (
 // calls and returns scriptable per-operation status codes (zero value = OK).
 type fakeEntryClient struct {
 	listCalls int
+	listHints [][]string
 	list      []spireapi.Entry
 
 	createCode codes.Code
@@ -56,8 +58,9 @@ type fakeEntryClient struct {
 	deleted []string
 }
 
-func (f *fakeEntryClient) ListEntries(context.Context) ([]spireapi.Entry, error) {
+func (f *fakeEntryClient) ListEntries(_ context.Context, hints ...string) ([]spireapi.Entry, error) {
 	f.listCalls++
+	f.listHints = append(f.listHints, append([]string(nil), hints...))
 	out := make([]spireapi.Entry, len(f.list))
 	copy(out, f.list)
 	return out, nil
@@ -159,11 +162,11 @@ func TestEntryListCache(t *testing.T) {
 		r := newCacheReconciler(fake, cacheCfg())
 		ctx := testCtx()
 
-		cur1, _, err := r.listEntries(ctx)
+		cur1, _, err := r.listEntries(ctx, nil)
 		require.NoError(t, err)
 		require.Len(t, cur1, 2)
 
-		cur2, _, err := r.listEntries(ctx)
+		cur2, _, err := r.listEntries(ctx, nil)
 		require.NoError(t, err)
 		require.Len(t, cur2, 2)
 
@@ -177,8 +180,8 @@ func TestEntryListCache(t *testing.T) {
 		r := newCacheReconciler(fake, cfg)
 		require.Nil(t, r.entryCache)
 
-		_, _, _ = r.listEntries(testCtx())
-		_, _, _ = r.listEntries(testCtx())
+		_, _, _ = r.listEntries(testCtx(), nil)
+		_, _, _ = r.listEntries(testCtx(), nil)
 		require.Equal(t, 2, fake.listCalls)
 	})
 
@@ -187,7 +190,7 @@ func TestEntryListCache(t *testing.T) {
 		r := newCacheReconciler(fake, cacheCfg())
 		require.Nil(t, r.entryCache.entries, "cache starts empty")
 
-		_, _, err := r.listEntries(testCtx())
+		_, _, err := r.listEntries(testCtx(), nil)
 		require.NoError(t, err)
 		require.Equal(t, 1, fake.listCalls)
 		require.NotNil(t, r.entryCache.entries)
@@ -198,12 +201,12 @@ func TestEntryListCache(t *testing.T) {
 		r := newCacheReconciler(fake, cacheCfg()) // reloadAfter = 1m
 		ctx := testCtx()
 
-		_, _, _ = r.listEntries(ctx)
-		_, _, _ = r.listEntries(ctx)
+		_, _, _ = r.listEntries(ctx, nil)
+		_, _, _ = r.listEntries(ctx, nil)
 		require.Equal(t, 1, fake.listCalls)
 
 		time.Sleep(2 * time.Minute) // fake clock advances past nextReload
-		_, _, _ = r.listEntries(ctx)
+		_, _, _ = r.listEntries(ctx, nil)
 		require.Equal(t, 2, fake.listCalls, "must re-list after reload interval elapses")
 	})
 
@@ -212,10 +215,10 @@ func TestEntryListCache(t *testing.T) {
 		r := newCacheReconciler(fake, cacheCfg())
 		ctx := testCtx()
 
-		_, _, _ = r.listEntries(ctx)
+		_, _, _ = r.listEntries(ctx, nil)
 		r.createEntries(ctx, []declaredEntry{declared("test.new")})
 
-		cur, _, err := r.listEntries(ctx)
+		cur, _, err := r.listEntries(ctx, nil)
 		require.NoError(t, err)
 		require.Equal(t, 1, fake.listCalls, "create result must be reflected in cache, not re-listed")
 		require.ElementsMatch(t, []string{"test.a", "test.new"}, ids(cur))
@@ -226,13 +229,13 @@ func TestEntryListCache(t *testing.T) {
 		r := newCacheReconciler(fake, cacheCfg())
 		ctx := testCtx()
 
-		_, _, _ = r.listEntries(ctx)
+		_, _, _ = r.listEntries(ctx, nil)
 		r.createEntries(ctx, []declaredEntry{declared("test.new")})
-		require.False(t, r.entryCache.fresh(), "drift must invalidate the cache")
+		require.False(t, r.entryCache.fresh(""), "drift must invalidate the cache")
 
-		_, _, _ = r.listEntries(ctx)
+		_, _, _ = r.listEntries(ctx, nil)
 		require.Equal(t, 2, fake.listCalls)
-		require.True(t, r.entryCache.fresh(), "cache fresh again after reload")
+		require.True(t, r.entryCache.fresh(""), "cache fresh again after reload")
 	})
 
 	bubble(t, "update NotFound drops entry and triggers resync", func(t *testing.T) {
@@ -240,12 +243,12 @@ func TestEntryListCache(t *testing.T) {
 		r := newCacheReconciler(fake, cacheCfg())
 		ctx := testCtx()
 
-		_, _, _ = r.listEntries(ctx)
+		_, _, _ = r.listEntries(ctx, nil)
 		r.updateEntries(ctx, []declaredEntry{declared("test.a")})
-		require.False(t, r.entryCache.fresh())
+		require.False(t, r.entryCache.fresh(""))
 		require.NotContains(t, r.entryCache.entries, "test.a")
 
-		_, _, _ = r.listEntries(ctx)
+		_, _, _ = r.listEntries(ctx, nil)
 		require.Equal(t, 2, fake.listCalls)
 	})
 
@@ -254,10 +257,10 @@ func TestEntryListCache(t *testing.T) {
 		r := newCacheReconciler(fake, cacheCfg())
 		ctx := testCtx()
 
-		_, _, _ = r.listEntries(ctx)
+		_, _, _ = r.listEntries(ctx, nil)
 		r.deleteEntries(ctx, []spireapi.Entry{testEntry("test.a")})
 
-		cur, _, err := r.listEntries(ctx)
+		cur, _, err := r.listEntries(ctx, nil)
 		require.NoError(t, err)
 		require.Equal(t, 1, fake.listCalls)
 		require.ElementsMatch(t, []string{"test.b"}, ids(cur))
@@ -268,13 +271,13 @@ func TestEntryListCache(t *testing.T) {
 		r := newCacheReconciler(fake, cacheCfg())
 		ctx := testCtx()
 
-		_, _, _ = r.listEntries(ctx)
-		require.True(t, r.entryCache.fresh())
+		_, _, _ = r.listEntries(ctx, nil)
+		require.True(t, r.entryCache.fresh(""))
 
 		r.createEntries(ctx, []declaredEntry{declared("test.new")})
-		require.False(t, r.entryCache.fresh(), "RPC error must invalidate the cache")
+		require.False(t, r.entryCache.fresh(""), "RPC error must invalidate the cache")
 
-		_, _, _ = r.listEntries(ctx)
+		_, _, _ = r.listEntries(ctx, nil)
 		require.Equal(t, 2, fake.listCalls, "next reconcile must reload from server")
 	})
 
@@ -283,9 +286,9 @@ func TestEntryListCache(t *testing.T) {
 		r := newCacheReconciler(fake, cacheCfg())
 		ctx := testCtx()
 
-		_, _, _ = r.listEntries(ctx)
+		_, _, _ = r.listEntries(ctx, nil)
 		r.deleteEntries(ctx, []spireapi.Entry{testEntry("test.a")})
-		require.False(t, r.entryCache.fresh())
+		require.False(t, r.entryCache.fresh(""))
 		require.NotContains(t, r.entryCache.entries, "test.a")
 		require.Len(t, fake.deleted, 1, "must not re-issue the delete")
 	})
@@ -298,10 +301,10 @@ func TestEntryListCache(t *testing.T) {
 		r := newCacheReconciler(fake, cfg)
 		ctx := testCtx()
 
-		_, del1, _ := r.listEntries(ctx)
+		_, del1, _ := r.listEntries(ctx, nil)
 		require.ElementsMatch(t, []string{"old.x"}, ids(del1))
 
-		cur2, del2, err := r.listEntries(ctx)
+		cur2, del2, err := r.listEntries(ctx, nil)
 		require.NoError(t, err)
 		require.Equal(t, 1, fake.listCalls)
 		require.ElementsMatch(t, []string{"test.a"}, ids(cur2))
@@ -332,13 +335,13 @@ func TestEntryListMetrics(t *testing.T) {
 		ctx := testCtx()
 
 		// First reconcile: cold cache -> server list.
-		_, _, err := r.listEntries(ctx)
+		_, _, err := r.listEntries(ctx, nil)
 		require.NoError(t, err)
 		require.Equal(t, 1.0, counterValue(t, r.promCounter[metrics.EntryListServerCalls]))
 		require.Equal(t, 0.0, counterValue(t, r.promCounter[metrics.EntryListCacheHits]))
 
 		// Second reconcile: served from the fresh cache -> cache hit.
-		_, _, err = r.listEntries(ctx)
+		_, _, err = r.listEntries(ctx, nil)
 		require.NoError(t, err)
 		require.Equal(t, 1.0, counterValue(t, r.promCounter[metrics.EntryListServerCalls]))
 		require.Equal(t, 1.0, counterValue(t, r.promCounter[metrics.EntryListCacheHits]))
@@ -352,10 +355,59 @@ func TestEntryListMetrics(t *testing.T) {
 		r.promCounter = newCounters()
 		ctx := testCtx()
 
-		_, _, _ = r.listEntries(ctx)
-		_, _, _ = r.listEntries(ctx)
+		_, _, _ = r.listEntries(ctx, nil)
+		_, _, _ = r.listEntries(ctx, nil)
 		require.Equal(t, 2.0, counterValue(t, r.promCounter[metrics.EntryListServerCalls]))
 		require.Equal(t, 0.0, counterValue(t, r.promCounter[metrics.EntryListCacheHits]))
+	})
+}
+
+func TestEntryListHintFilter(t *testing.T) {
+	t.Run("collects unique hints from managed resources", func(t *testing.T) {
+		r := newCacheReconciler(&fakeEntryClient{}, ReconcilerConfig{EnableEntryListHintFilter: true})
+		hints := r.entryListHints(
+			[]*ClusterSPIFFEID{
+				{ClusterSPIFFEID: spirev1alpha1.ClusterSPIFFEID{Spec: spirev1alpha1.ClusterSPIFFEIDSpec{Hint: "cluster-a"}}},
+				{ClusterSPIFFEID: spirev1alpha1.ClusterSPIFFEID{Spec: spirev1alpha1.ClusterSPIFFEIDSpec{Hint: "cluster-b"}}},
+				{ClusterSPIFFEID: spirev1alpha1.ClusterSPIFFEID{Spec: spirev1alpha1.ClusterSPIFFEIDSpec{Hint: "cluster-a"}}},
+			},
+			[]*ClusterStaticEntry{
+				{ClusterStaticEntry: spirev1alpha1.ClusterStaticEntry{Spec: spirev1alpha1.ClusterStaticEntrySpec{Hint: "static"}}},
+			},
+		)
+
+		require.Equal(t, []string{"cluster-a", "cluster-b", "static"}, hints)
+	})
+
+	t.Run("falls back to full list when a managed resource has no hint", func(t *testing.T) {
+		r := newCacheReconciler(&fakeEntryClient{}, ReconcilerConfig{EnableEntryListHintFilter: true})
+		hints := r.entryListHints(
+			[]*ClusterSPIFFEID{
+				{ClusterSPIFFEID: spirev1alpha1.ClusterSPIFFEID{Spec: spirev1alpha1.ClusterSPIFFEIDSpec{Hint: "cluster-a"}}},
+				{ClusterSPIFFEID: spirev1alpha1.ClusterSPIFFEID{}},
+			},
+			nil,
+		)
+
+		require.Nil(t, hints)
+	})
+
+	t.Run("passes hint filter to server list and reloads when hints change", func(t *testing.T) {
+		fake := &fakeEntryClient{list: []spireapi.Entry{testEntry("test.a")}}
+		r := newCacheReconciler(fake, cacheCfg())
+		ctx := testCtx()
+
+		_, _, err := r.listEntries(ctx, []string{"cluster-a"})
+		require.NoError(t, err)
+		require.Equal(t, [][]string{{"cluster-a"}}, fake.listHints)
+
+		_, _, err = r.listEntries(ctx, []string{"cluster-a"})
+		require.NoError(t, err)
+		require.Equal(t, 1, fake.listCalls)
+
+		_, _, err = r.listEntries(ctx, []string{"cluster-b"})
+		require.NoError(t, err)
+		require.Equal(t, [][]string{{"cluster-a"}, {"cluster-b"}}, fake.listHints)
 	})
 }
 
