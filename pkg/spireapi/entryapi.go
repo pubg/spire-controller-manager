@@ -19,9 +19,9 @@ package spireapi
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"github.com/samber/lo"
+	"github.com/samber/lo/parallel"
 	entryv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/entry/v1"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
 	"google.golang.org/grpc"
@@ -70,38 +70,29 @@ func (c entryClient) ListEntries(ctx context.Context, hints ...string) ([]Entry,
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	var wg sync.WaitGroup
-	var errOnce sync.Once
-	var firstErr error
-	entriesByHint := make([][]Entry, len(filterHints))
-
-	for i, hint := range filterHints {
-		wg.Add(1)
-		go func(i int, hint string) {
-			defer wg.Done()
-
-			hintEntries, err := c.listEntries(ctx, &entryv1.ListEntriesRequest_Filter{
-				ByHint: wrapperspb.String(hint),
-			})
-			if err != nil {
-				errOnce.Do(func() {
-					firstErr = err
-					cancel()
-				})
-				return
-			}
-			entriesByHint[i] = hintEntries
-		}(i, hint)
-	}
-	wg.Wait()
-	if firstErr != nil {
-		return nil, firstErr
+	type listEntriesResult struct {
+		entries []Entry
+		err     error
 	}
 
-	var entries []Entry
-	for _, hintEntries := range entriesByHint {
-		entries = append(entries, hintEntries...)
+	results := parallel.Map(filterHints, func(hint string, _ int) listEntriesResult {
+		entries, err := c.listEntries(ctx, &entryv1.ListEntriesRequest_Filter{
+			ByHint: wrapperspb.String(hint),
+		})
+		if err != nil {
+			cancel()
+		}
+		return listEntriesResult{entries: entries, err: err}
+	})
+	if result, ok := lo.Find(results, func(result listEntriesResult) bool {
+		return result.err != nil
+	}); ok {
+		return nil, result.err
 	}
+
+	entries := lo.FlatMap(results, func(result listEntriesResult, _ int) []Entry {
+		return result.entries
+	})
 	return lo.UniqBy(entries, func(entry Entry) string {
 		return entry.ID
 	}), nil
