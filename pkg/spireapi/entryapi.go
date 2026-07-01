@@ -20,10 +20,13 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/samber/lo"
+	"github.com/samber/lo/parallel"
 	entryv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/entry/v1"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -41,7 +44,7 @@ const (
 type Field string
 
 type EntryClient interface {
-	ListEntries(ctx context.Context) ([]Entry, error)
+	ListEntries(ctx context.Context, hints ...string) ([]Entry, error)
 	CreateEntries(ctx context.Context, entries []Entry) ([]Status, error)
 	UpdateEntries(ctx context.Context, entries []Entry) ([]Status, error)
 	DeleteEntries(ctx context.Context, entryIDs []string) ([]Status, error)
@@ -56,11 +59,51 @@ type entryClient struct {
 	api entryv1.EntryClient
 }
 
-func (c entryClient) ListEntries(ctx context.Context) ([]Entry, error) {
+func (c entryClient) ListEntries(ctx context.Context, hints ...string) ([]Entry, error) {
+	filterHints := lo.Uniq(lo.Filter(hints, func(hint string, _ int) bool {
+		return hint != ""
+	}))
+	if len(filterHints) == 0 {
+		return c.listEntries(ctx, nil)
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type listEntriesResult struct {
+		entries []Entry
+		err     error
+	}
+
+	results := parallel.Map(filterHints, func(hint string, _ int) listEntriesResult {
+		entries, err := c.listEntries(ctx, &entryv1.ListEntriesRequest_Filter{
+			ByHint: wrapperspb.String(hint),
+		})
+		if err != nil {
+			cancel()
+		}
+		return listEntriesResult{entries: entries, err: err}
+	})
+	if result, ok := lo.Find(results, func(result listEntriesResult) bool {
+		return result.err != nil
+	}); ok {
+		return nil, result.err
+	}
+
+	entries := lo.FlatMap(results, func(result listEntriesResult, _ int) []Entry {
+		return result.entries
+	})
+	return lo.UniqBy(entries, func(entry Entry) string {
+		return entry.ID
+	}), nil
+}
+
+func (c entryClient) listEntries(ctx context.Context, filter *entryv1.ListEntriesRequest_Filter) ([]Entry, error) {
 	var entries []*types.Entry
 	var pageToken string
 	for {
 		resp, err := c.api.ListEntries(ctx, &entryv1.ListEntriesRequest{
+			Filter:    filter,
 			PageToken: pageToken,
 			PageSize:  entryListPageSize,
 		})

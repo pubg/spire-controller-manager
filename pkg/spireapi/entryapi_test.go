@@ -92,6 +92,40 @@ func TestEntryAPIListEntries(t *testing.T) {
 	}
 }
 
+func TestEntryAPIListEntriesByHint(t *testing.T) {
+	server, client := startEntryAPIServer(t)
+	withHint := func(entry Entry, hint string) Entry {
+		entry.Hint = hint
+		return entry
+	}
+	server.setEntries(t,
+		withHint(entry1, "cluster-a"),
+		withHint(entry2, "cluster-b"),
+		withHint(entry3, "cluster-a"),
+	)
+
+	actualEntries, err := client.ListEntries(ctx, "cluster-a", "cluster-b", "cluster-a", "")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []Entry{
+		withHint(entry1, "cluster-a"),
+		withHint(entry2, "cluster-b"),
+		withHint(entry3, "cluster-a"),
+	}, actualEntries)
+	assert.ElementsMatch(t, []string{"cluster-a", "cluster-b"}, server.getListEntryHints())
+}
+
+func TestEntryAPIListEntriesByHintDeduplicatesEntries(t *testing.T) {
+	server, client := startEntryAPIServer(t)
+	entry := entry1
+	entry.Hint = "cluster-a"
+	server.setEntries(t, entry)
+	server.duplicateListEntries = true
+
+	actualEntries, err := client.ListEntries(ctx, "cluster-a")
+	require.NoError(t, err)
+	assert.Equal(t, []Entry{entry}, actualEntries)
+}
+
 func TestCreateEntries(t *testing.T) {
 	server, client := startEntryAPIServer(t)
 
@@ -393,8 +427,10 @@ type entryServer struct {
 
 	mtx     sync.RWMutex
 	entries []*apitypes.Entry
+	hints   []string
 
 	clearUnsupportedFields bool
+	duplicateListEntries   bool
 
 	listEntriesErr        error
 	batchCreateEntriesErr error
@@ -405,11 +441,25 @@ type entryServer struct {
 func (s *entryServer) ListEntries(_ context.Context, req *entryv1.ListEntriesRequest) (*entryv1.ListEntriesResponse, error) {
 	resp := new(entryv1.ListEntriesResponse)
 
-	s.mtx.RLock()
-	defer s.mtx.RUnlock()
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
 
-	start, end, more := listBounds(req.PageToken, int(req.PageSize), len(s.entries), func(i int) string { return s.entries[i].Id })
-	for _, entry := range s.entries[start:end] {
+	entries := s.entries
+	if hint := req.GetFilter().GetByHint().GetValue(); hint != "" {
+		s.hints = append(s.hints, hint)
+		entries = nil
+		for _, entry := range s.entries {
+			if entry.Hint == hint {
+				entries = append(entries, entry)
+			}
+		}
+	}
+	if s.duplicateListEntries && len(entries) == 1 {
+		entries = append(entries, entries[0])
+	}
+
+	start, end, more := listBounds(req.PageToken, int(req.PageSize), len(entries), func(i int) string { return entries[i].Id })
+	for _, entry := range entries[start:end] {
 		resp.Entries = append(resp.Entries, entry)
 		if more {
 			resp.NextPageToken = entry.Id
@@ -494,6 +544,12 @@ func (s *entryServer) getEntries(t *testing.T) []Entry {
 	entries, err := entriesFromAPI(s.entries)
 	require.NoError(t, err)
 	return entries
+}
+
+func (s *entryServer) getListEntryHints() []string {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	return append([]string(nil), s.hints...)
 }
 
 func (s *entryServer) setEntries(t *testing.T, entries ...Entry) {

@@ -35,11 +35,12 @@ type entryListCache struct {
 	reloadAfter time.Duration
 	entries     map[string]spireapi.Entry
 	nextReload  time.Time
+	filterKey   string
 }
 
 // fresh reports whether the cache can be served without listing from the server.
-func (c *entryListCache) fresh() bool {
-	return c.entries != nil && time.Now().Before(c.nextReload)
+func (c *entryListCache) fresh(filterKey string) bool {
+	return c.entries != nil && c.filterKey == filterKey && time.Now().Before(c.nextReload)
 }
 
 // snapshot returns the cached entries as a slice.
@@ -52,11 +53,12 @@ func (c *entryListCache) snapshot() []spireapi.Entry {
 }
 
 // replace rebuilds the cache from a fresh server list and arms the next reload.
-func (c *entryListCache) replace(entries []spireapi.Entry) {
+func (c *entryListCache) replace(filterKey string, entries []spireapi.Entry) {
 	c.entries = make(map[string]spireapi.Entry, len(entries))
 	for _, entry := range entries {
 		c.entries[entry.ID] = entry
 	}
+	c.filterKey = filterKey
 	c.nextReload = time.Now().Add(c.reloadAfter)
 }
 

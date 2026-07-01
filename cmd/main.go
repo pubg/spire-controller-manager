@@ -259,7 +259,8 @@ func parseConfig() (Config, error) {
 		"entryIDPrefix", retval.ctrlConfig.EntryIDPrefix,
 		"entryIDPrefixCleanup", printCleanup,
 		"enableEntryListCache", retval.ctrlConfig.EnableEntryListCache,
-		"entryListCacheReloadInterval", retval.ctrlConfig.EntryListCacheReloadInterval)
+		"entryListCacheReloadInterval", retval.ctrlConfig.EntryListCacheReloadInterval,
+		"enableEntryListHintFilter", retval.ctrlConfig.EnableEntryListHintFilter)
 
 	switch {
 	case retval.ctrlConfig.TrustDomain == "":
@@ -271,6 +272,8 @@ func parseConfig() (Config, error) {
 		return retval, errors.New("validating webhook configuration name is required configuration")
 	case retval.ctrlConfig.EnableEntryListCache && retval.ctrlConfig.EntryIDPrefix == "":
 		return retval, errors.New("enableEntryListCache requires entryIDPrefix to be set")
+	case retval.ctrlConfig.EnableEntryListHintFilter && retval.ctrlConfig.EntryIDPrefix == "":
+		return retval, errors.New("enableEntryListHintFilter requires entryIDPrefix to be set")
 	case retval.ctrlConfig.ControllerManagerConfigurationSpec.Webhook.CertDir != "":
 		setupLog.Info("certDir configuration is ignored", "certDir", retval.ctrlConfig.ControllerManagerConfigurationSpec.Webhook.CertDir)
 	}
@@ -393,6 +396,7 @@ func run(mainConfig Config) (err error) {
 
 			EnableEntryListCache:         mainConfig.ctrlConfig.EnableEntryListCache,
 			EntryListCacheReloadInterval: mainConfig.ctrlConfig.EntryListCacheReloadInterval,
+			EnableEntryListHintFilter:    mainConfig.ctrlConfig.EnableEntryListHintFilter,
 		})
 	}
 
@@ -556,6 +560,7 @@ func staticRun(mainConfig Config) (err error) {
 
 			EnableEntryListCache:         mainConfig.ctrlConfig.EnableEntryListCache,
 			EntryListCacheReloadInterval: mainConfig.ctrlConfig.EntryListCacheReloadInterval,
+			EnableEntryListHintFilter:    mainConfig.ctrlConfig.EnableEntryListHintFilter,
 		})
 		go func() {
 			err := entryReconciler.Run(ctx)

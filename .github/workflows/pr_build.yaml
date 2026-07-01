@@ -85,7 +85,7 @@ jobs:
           make load-images
       - name: Test image
         run: |
-          docker tag ghcr.io/spiffe/spire-controller-manager:devel ghcr.io/spiffe/spire-controller-manager:nightly
+          docker tag "ghcr.io/${GITHUB_REPOSITORY}:devel" ghcr.io/spiffe/spire-controller-manager:devel
           (cd demo; ./test.sh)
 
   success:
