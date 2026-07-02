@@ -23,14 +23,29 @@ FROM --platform=${BUILDPLATFORM} tonistiigi/xx@sha256:904fe94f236d36d65aeb5a2462
 
 # Build
 FROM --platform=${BUILDPLATFORM} base AS builder
+ARG datadog_instrumentation=false
+ARG orchestrion_version=v1.11.0
 ARG TARGETPLATFORM
 ARG TARGETARCH
 ENV CGO_ENABLED=0
 COPY --link --from=xx / /
+
+RUN <<EOF
+set -e
+if [ "${datadog_instrumentation}" = "true" ]; then
+  go install "github.com/DataDog/orchestrion@${orchestrion_version}"
+  orchestrion pin
+fi
+EOF
+
 RUN xx-go --wrap
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
-    go build -o bin/spire-controller-manager cmd/main.go
+    if [ "${datadog_instrumentation}" = "true" ]; then \
+      go build -toolexec="orchestrion toolexec" -o bin/spire-controller-manager cmd/main.go; \
+    else \
+      go build -o bin/spire-controller-manager cmd/main.go; \
+    fi
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details

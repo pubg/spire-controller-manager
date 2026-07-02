@@ -1,9 +1,11 @@
 name: Nightly Build
 on:
-  schedule:
-    # Random minute number to avoid GH scheduler stampede
-    - cron: '37 21 * * *'
-  workflow_dispatch: {}
+  push:
+    tags:
+      - 'nightly-*'
+
+env:
+  DATADOG_INSTRUMENTATION: "true"
 
 jobs:
   build-and-publish-images:
@@ -36,4 +38,4 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Push images
-        run: ./.github/workflows/scripts/push-images.sh nightly
+        run: ./.github/workflows/scripts/push-images.sh "${GITHUB_REF#refs/tags/}"

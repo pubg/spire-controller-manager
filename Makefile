@@ -1,5 +1,7 @@
 BINARIES := spire-controller-manager
 PLATFORMS ?= linux/amd64,linux/arm64
+DATADOG_INSTRUMENTATION ?= false
+ORCHESTRION_VERSION ?= v1.11.0
 DIR := ${CURDIR}
 
 # Image URL to use all building/pushing image targets
@@ -169,6 +171,8 @@ spire-controller-manager-image.tar: Dockerfile FORCE | container-builder
 		--platform $(PLATFORMS) \
 		--target spire-controller-manager \
 		--build-arg goversion=$(go_version) \
+		--build-arg datadog_instrumentation=$(DATADOG_INSTRUMENTATION) \
+		--build-arg orchestrion_version=$(ORCHESTRION_VERSION) \
 		-o type=oci,dest=$@ \
 	    .
 
