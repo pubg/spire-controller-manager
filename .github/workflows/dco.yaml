@@ -31,4 +31,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           pip3 install -U dco-check
-          dco-check --exclude-pattern 'dependabot\[bot\]@users\.noreply\.github\.com'
+          # sayadas@redhat.com: upstream commit fc4afb5e has a sign-off whose name
+          # ("Sayak Das") does not match the author name ("Sayak"), which dco-check
+          # rejects. The commit is already in spiffe/spire-controller-manager main.
+          dco-check --exclude-pattern 'dependabot\[bot\]@users\.noreply\.github\.com|sayadas@redhat\.com'
