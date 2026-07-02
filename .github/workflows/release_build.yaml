@@ -3,6 +3,10 @@ on:
   push:
     tags:
       - 'v[0-9].[0-9]+.[0-9]+'
+
+env:
+  DATADOG_INSTRUMENTATION: "true"
+
 jobs:
   build-image:
     runs-on: ubuntu-22.04
